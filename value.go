@@ -6,7 +6,7 @@ import (
 	"math/rand"
 )
 
-// A simplistic autograd engine. This is a micrograd-clone.
+// An autograd engine. This is a micrograd-clone.
 // See https://github.com/karpathy/micrograd/tree/master for the original.
 type Value struct {
 	Data         float64
