@@ -1,0 +1,6 @@
+# Compiled binaries.
+**/bin/
+tmp/
+
+# Generated datasets. Regenerate with cmd/datagen/generate_boards_*.sh.
+datasets/

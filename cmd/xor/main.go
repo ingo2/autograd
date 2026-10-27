@@ -14,24 +14,24 @@ import (
 	"strconv"
 	"strings"
 
-	"autograd"
+	"autograd/nn"
 )
 
-var activations = map[string]autograd.ActivationFunc{
-	"linear": autograd.Linear,
-	"relu":   autograd.ReLU,
-	"tanh":   autograd.Tanh,
+var activations = map[string]nn.ActivationFunc{
+	"linear": nn.Linear,
+	"relu":   nn.ReLU,
+	"tanh":   nn.Tanh,
 }
 
 type sample struct {
-	inputs []*autograd.Value
+	inputs []*nn.Value
 	target float64
 }
 
 // result describes one training run.
 type result struct {
 	seed   int64
-	mlp    *autograd.MLP
+	mlp    *nn.MLP
 	losses []float64 // average loss per epoch
 	loss   float64   // average loss of the trained net
 	solved bool
@@ -61,7 +61,7 @@ func main() {
 	}
 
 	layerSizes := []int{2, *hidden, 1}
-	layerActs := []autograd.ActivationFunc{act, autograd.Tanh}
+	layerActs := []nn.ActivationFunc{act, nn.Tanh}
 
 	// XOR with targets in [-1, 1]:
 	// 0 0 => -1
@@ -83,7 +83,7 @@ func main() {
 	numSolved := 0
 	for k := range *runs {
 		runSeed := *seed + int64(k)
-		mlp := autograd.NewMLP(rand.New(rand.NewSource(runSeed)), layerSizes, layerActs)
+		mlp := nn.NewMLP(rand.New(rand.NewSource(runSeed)), layerSizes, layerActs)
 		losses := train(mlp, samples, *epochs, *learningRate)
 		r := &result{
 			seed:   runSeed,
@@ -125,14 +125,14 @@ func printNet(title string, r *result, samples []sample) {
 	printParams(r.mlp)
 }
 
-func train(mlp *autograd.MLP, samples []sample, epochs int, learningRate float64) []float64 {
+func train(mlp *nn.MLP, samples []sample, epochs int, learningRate float64) []float64 {
 	losses := make([]float64, epochs)
 	for epoch := range epochs {
 		totalLoss := 0.0
 		for _, s := range samples {
 			// Forward pass.
 			score := mlp.Call(s.inputs, false)
-			loss := autograd.NewValueMSE(score, []float64{s.target})
+			loss := nn.NewValueMSE(score, []float64{s.target})
 			totalLoss += loss.Data
 
 			// Backward pass.
@@ -149,15 +149,15 @@ func train(mlp *autograd.MLP, samples []sample, epochs int, learningRate float64
 	return losses
 }
 
-func avgLoss(mlp *autograd.MLP, samples []sample) float64 {
+func avgLoss(mlp *nn.MLP, samples []sample) float64 {
 	total := 0.0
 	for _, s := range samples {
-		total += autograd.NewValueMSE(mlp.Call(s.inputs, true), []float64{s.target}).Data
+		total += nn.NewValueMSE(mlp.Call(s.inputs, true), []float64{s.target}).Data
 	}
 	return total / float64(len(samples))
 }
 
-func solved(mlp *autograd.MLP, samples []sample) bool {
+func solved(mlp *nn.MLP, samples []sample) bool {
 	for _, s := range samples {
 		out := mlp.Call(s.inputs, true)[0].Data
 		var class float64
@@ -188,7 +188,7 @@ func printLosses(losses []float64) {
 	}
 }
 
-func printResults(mlp *autograd.MLP, samples []sample) {
+func printResults(mlp *nn.MLP, samples []sample) {
 	fmt.Println("  Results:")
 	for _, s := range samples {
 		out := mlp.Call(s.inputs, true)[0].Data
@@ -197,7 +197,7 @@ func printResults(mlp *autograd.MLP, samples []sample) {
 	}
 }
 
-func printParams(mlp *autograd.MLP) {
+func printParams(mlp *nn.MLP) {
 	fmt.Println("  Learned parameters:")
 	for i, layer := range mlp.Layers {
 		name := "hidden"
@@ -216,10 +216,10 @@ func printParams(mlp *autograd.MLP) {
 	}
 }
 
-func values(xs ...float64) []*autograd.Value {
-	vs := make([]*autograd.Value, len(xs))
+func values(xs ...float64) []*nn.Value {
+	vs := make([]*nn.Value, len(xs))
 	for i, x := range xs {
-		vs[i] = autograd.NewValue(x)
+		vs[i] = nn.NewValue(x)
 	}
 	return vs
 }

@@ -1,4 +1,4 @@
-package autograd
+package nn
 
 import (
 	"math"
