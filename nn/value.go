@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 )
 
 // An autograd engine. This is a micrograd-clone.
@@ -280,8 +281,8 @@ func NewValueCrossEntropy(logits []*Value, probDistrib []float64) *Value {
 func (v *Value) Backward() {
 	topo := topologicalSort(v)
 	v.Grad = 1.0
-	for i := len(topo) - 1; i >= 0; i-- {
-		topo[i].backwardFunc()
+	for _, t := range slices.Backward(topo) {
+		t.backwardFunc()
 	}
 }
 
