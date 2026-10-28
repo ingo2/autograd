@@ -77,7 +77,7 @@ func D4Augment(boards []AnnotatedBoard) []AnnotatedBoard {
 	n := boardSideLen(boards[0].Board)
 	perms := D4Perms(n)
 
-	// invSymmetries[i] is the inverse permutation of symmetries[i]. Board cells are transformed via
+	// invPerms[i] is the inverse permutation of perms[i]. Board cells are transformed via
 	// sym (newBoard.Board[cell] = origBoard.Board[sym[cell]], i.e. the piece at old position
 	// sym[cell] moves to new position cell). Scores.Pos values move in the opposite direction
 	// (old position -> new position), so they need the inverse permutation.
@@ -90,9 +90,10 @@ func D4Augment(boards []AnnotatedBoard) []AnnotatedBoard {
 		invPerms[i] = inv
 	}
 
-	// seen tracks the canonical Board of every board already added to result, so that boards which
-	// are invariant under one or more D4 symmetries (e.g. an empty board, or a single piece on the
-	// center cell) don't end up as repeated copies of the same training example.
+	// seen tracks the exact Board of every board already added to result, so that boards which are
+	// invariant under one or more D4 symmetries (e.g. an empty board, or a single piece on the
+	// center cell), or input boards that are variants of each other, don't end up as repeated
+	// copies of the same training example.
 	seen := make(map[BoardKey]struct{}, 8*len(boards))
 	addIfNew := func(b AnnotatedBoard) {
 		key := b.Board.ToKey()
@@ -132,9 +133,8 @@ func D4Augment(boards []AnnotatedBoard) []AnnotatedBoard {
 }
 
 // RemoveOverlap returns the entries of boards whose Board value does not appear in any of exclude.
-// It is meant to be applied after D4Augment: since the symmetric variants it generates can coincide
-// with boards held out for testing or validation, this removes those duplicates from the augmented
-// training set.
+// It only matches identical boards, not rotations or reflections of them: to keep all variants of
+// a position out of the training set, split with D4Split instead.
 func RemoveOverlap(boards []AnnotatedBoard, exclude ...[]AnnotatedBoard) []AnnotatedBoard {
 	excluded := make(map[BoardKey]struct{})
 	for _, set := range exclude {

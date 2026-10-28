@@ -1,6 +1,8 @@
 package tictactoe
 
 import (
+	"fmt"
+	"maps"
 	"slices"
 	"testing"
 )
@@ -289,5 +291,171 @@ func TestRemoveOverlap_NoOverlap(t *testing.T) {
 
 	if len(result) != 2 {
 		t.Fatalf("len(result) = %d, want 2", len(result))
+	}
+}
+
+// applyPerm returns the board p produces from board: result[cell] = board[p[cell]].
+func applyPerm(board Board, p []int) Board {
+	result := make(Board, len(board))
+	for cell := range board {
+		result[cell] = board[p[cell]]
+	}
+	return result
+}
+
+// boardLines returns the rows, columns, and both diagonals of an nxn board as sorted cell lists.
+func boardLines(n int) [][]int {
+	var lines [][]int
+	diag, anti := make([]int, n), make([]int, n)
+	for i := range n {
+		row, col := make([]int, n), make([]int, n)
+		for j := range n {
+			row[j] = i*n + j
+			col[j] = j*n + i
+		}
+		lines = append(lines, row, col)
+		diag[i] = i*n + i
+		anti[i] = i*n + n - 1 - i
+	}
+	slices.Sort(anti)
+	return append(lines, diag, anti)
+}
+
+// TestD4Perms_GroupProperties checks for several board sizes that the identity together with
+// D4Perms forms the dihedral group D4: 8 distinct permutations, closed under composition, and each
+// one maps every row, column, and diagonal onto a row, column, or diagonal.
+func TestD4Perms_GroupProperties(t *testing.T) {
+	for n := 2; n <= 5; n++ {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			identity := make([]int, n*n)
+			for i := range identity {
+				identity[i] = i
+			}
+			group := append([][]int{identity}, D4Perms(n)...)
+
+			members := map[string]bool{}
+			for i, p := range group {
+				if !slices.Equal(slices.Sorted(slices.Values(p)), identity) {
+					t.Fatalf("group[%d] = %v is not a permutation of 0..%d", i, p, n*n-1)
+				}
+				members[fmt.Sprint(p)] = true
+			}
+			if len(members) != 8 {
+				t.Fatalf("got %d distinct permutations, want 8", len(members))
+			}
+
+			for i, p := range group {
+				for j, q := range group {
+					composed := make([]int, n*n)
+					for cell := range composed {
+						composed[cell] = q[p[cell]]
+					}
+					if !members[fmt.Sprint(composed)] {
+						t.Errorf("group[%d] after group[%d] = %v is not in the group", i, j, composed)
+					}
+				}
+			}
+
+			lines := map[string]bool{}
+			for _, line := range boardLines(n) {
+				lines[fmt.Sprint(line)] = true
+			}
+			for i, p := range group {
+				for _, line := range boardLines(n) {
+					image := make([]int, len(line))
+					for k, cell := range line {
+						image[k] = p[cell]
+					}
+					slices.Sort(image)
+					if !lines[fmt.Sprint(image)] {
+						t.Errorf("group[%d] maps line %v to %v, which is not a line", i, line, image)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestCanonicalKey_ReachableBoards checks, for every reachable 3x3 board, that all of its D4
+// variants share one CanonicalKey and that this key is the smallest of the variants' own keys.
+// The reachable boards must fall into the 765 well-known symmetry classes of tic-tac-toe.
+func TestCanonicalKey_ReachableBoards(t *testing.T) {
+	classes := map[BoardKey]struct{}{}
+	for _, board := range Enumerate3x3Boards() {
+		want := board.ToKey()
+		for _, p := range D4Perms(3) {
+			want = min(want, applyPerm(board, p).ToKey())
+		}
+		if got := CanonicalKey(board); got != want {
+			t.Fatalf("CanonicalKey(%v) = %d, want %d (smallest key of its variants)", board, got, want)
+		}
+		for _, p := range D4Perms(3) {
+			variant := applyPerm(board, p)
+			if got := CanonicalKey(variant); got != want {
+				t.Fatalf("CanonicalKey(%v) = %d, want %d (same as its variant %v)",
+					variant, got, want, board)
+			}
+		}
+		classes[want] = struct{}{}
+	}
+	if len(classes) != 765 {
+		t.Errorf("got %d symmetry classes, want 765", len(classes))
+	}
+}
+
+// TestD4CanonicalPerm_RepMatchesPerm checks the documented contract rep[cell] = board[perm[cell]].
+func TestD4CanonicalPerm_RepMatchesPerm(t *testing.T) {
+	for _, board := range Enumerate3x3Boards() {
+		rep, perm := d4CanonicalPerm(board)
+		if got := applyPerm(board, perm); !slices.Equal(got, rep) {
+			t.Fatalf("d4CanonicalPerm(%v): applying perm %v gives %v, want rep %v",
+				board, perm, got, rep)
+		}
+	}
+}
+
+// TestD4Augment_ScoresMatchMinimax checks on every dataset position that each variant D4Augment
+// produces carries exactly the scores minimax computes for that variant directly.
+func TestD4Augment_ScoresMatchMinimax(t *testing.T) {
+	boards := FilterBoards(Enumerate3x3Boards())
+	annotated := AnnotateCanonicalBoards(boards, X, DefaultMinimaxConfig())
+	byKey := make(map[BoardKey]AnnotatedBoard, len(annotated))
+	for _, ab := range annotated {
+		byKey[ab.Board.ToKey()] = ab
+	}
+
+	for _, ab := range annotated {
+		for _, variant := range D4Augment([]AnnotatedBoard{ab}) {
+			want, ok := byKey[variant.Board.ToKey()]
+			if !ok {
+				t.Fatalf("variant %v of %v is not a reachable dataset board", variant.Board, ab.Board)
+			}
+			if !maps.Equal(scoresByPos(variant.Scores), scoresByPos(want.Scores)) {
+				t.Fatalf("variant %v of %v: Scores = %v, want %v",
+					variant.Board, ab.Board, variant.Scores, want.Scores)
+			}
+		}
+	}
+}
+
+func scoresByPos(scores []ScoredMove) map[int]float64 {
+	m := make(map[int]float64, len(scores))
+	for _, s := range scores {
+		m[s.Pos] = s.Score
+	}
+	return m
+}
+
+// TestD4Augment_DatasetAlreadyComplete checks that the 3x3 dataset boards already contain every D4
+// variant of each position, so augmenting them adds nothing.
+func TestD4Augment_DatasetAlreadyComplete(t *testing.T) {
+	boards := FilterBoards(Enumerate3x3Boards())
+	annotated := make([]AnnotatedBoard, len(boards))
+	for i, b := range boards {
+		annotated[i] = AnnotatedBoard{Board: b, Player: X}
+	}
+
+	if got := len(D4Augment(annotated)); got != len(boards) {
+		t.Errorf("len(D4Augment(dataset)) = %d, want %d", got, len(boards))
 	}
 }

@@ -226,3 +226,30 @@ func TestSplit_ZeroFractions(t *testing.T) {
 		t.Errorf("train size: got %d, want %d", len(train), len(boards))
 	}
 }
+
+// TestD4Split_SymmetricVariantsStayTogether checks that all D4 variants of a position land in the
+// same partition. Otherwise the held-out sets contain positions the model has already seen
+// rotated or mirrored during training.
+func TestD4Split_SymmetricVariantsStayTogether(t *testing.T) {
+	boards := FilterBoards(Enumerate3x3Boards())
+	annotated := make([]AnnotatedBoard, len(boards))
+	for i, b := range boards {
+		annotated[i] = AnnotatedBoard{Board: b, Player: X}
+	}
+
+	train, test, val, err := D4Split(annotated, 0.2, 0.1, rand.New(rand.NewSource(42)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	partitionOf := map[BoardKey]string{}
+	for name, part := range map[string][]AnnotatedBoard{"train": train, "test": test, "val": val} {
+		for _, ab := range part {
+			key := CanonicalKey(ab.Board)
+			if other, ok := partitionOf[key]; ok && other != name {
+				t.Fatalf("variants of %v are in both %s and %s", ab.Board, other, name)
+			}
+			partitionOf[key] = name
+		}
+	}
+}

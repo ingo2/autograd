@@ -32,8 +32,9 @@ func Split(boards []AnnotatedBoard, testFraction, validationFraction float64) (t
 }
 
 // D4Split partitions boards into train, test, and validation slices while keeping symmetry groups
-// together: all boards sharing the same Board key are always assigned to the same partition.
-// This prevents D4-augmented training examples from leaking into the held-out sets. Sizes are
+// together: all boards sharing the same CanonicalKey (i.e. all rotations and reflections of a
+// position) are always assigned to the same partition. This prevents the held-out sets from
+// containing positions that the training set holds in rotated or reflected form. Sizes are
 // approximate (greedy first-fit on groups), so actual fractions may overshoot slightly. The caller
 // is responsible for supplying a seeded rng for reproducibility.
 func D4Split(boards []AnnotatedBoard, testFraction, validationFraction float64, rng *rand.Rand) (
@@ -47,7 +48,7 @@ func D4Split(boards []AnnotatedBoard, testFraction, validationFraction float64, 
 
 	groupedBoards := map[BoardKey][]AnnotatedBoard{}
 	for _, ab := range boards {
-		key := ab.Board.ToKey()
+		key := CanonicalKey(ab.Board)
 		groupedBoards[key] = append(groupedBoards[key], ab)
 	}
 
