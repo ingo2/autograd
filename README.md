@@ -120,7 +120,7 @@ verwendet.
 
 ### Aufteilung und D4-Symmetrien
 
-Mit `-test-fraction` (Standard 0.1) wird ein Teil der Stellungen aus dem Training herausgenommen.
+Mit `-test-fraction` wird ein Teil der Stellungen aus dem Training herausgenommen.
 Diese Stellungen sieht das Modell beim Training nie, sie werden erst danach ausgewertet. Dabei
 spielen die Symmetrien des Boards eine Rolle.
 
@@ -144,10 +144,9 @@ Spiegelung |  Spiegelung -  Spiegelung \  Spiegelung /
 Der Zug auf Feld 2 (rechts neben O) im Original entspricht nach der Drehung um 90 Grad dem Zug auf
 Feld 8 (unter O) und hat denselben Score.
 
-Der Datensatz enthaelt bereits alle symmetrischen Varianten jeder Stellung, das Training augmentiert
-deshalb nicht zusaetzlich. Beim Aufteilen in Trainings- und Testdaten (`D4Split`) landen alle
-Varianten derselben Stellung immer in derselben Menge, damit das Modell im Test keine Stellungen
-sieht, die es als gedrehte oder gespiegelte Variante schon aus dem Training kennt.
+Beim Aufteilen in Trainings- und Testdaten (`D4Split`) landen alle Varianten derselben Stellung 
+immer in derselben Menge, damit das Modell im Test keine Stellungen sieht, die es als gedrehte oder 
+gespiegelte Variante schon aus dem Training kennt.
 
 ### Epochen
 
