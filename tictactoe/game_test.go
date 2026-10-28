@@ -196,7 +196,7 @@ func TestConnectN(t *testing.T) {
 	})
 
 	t.Run("two in a row does not win", func(t *testing.T) {
-		// X has only 2 in a row — should still be running.
+		// X has only 2 in a row, should still be running.
 		game := NewConnectNGame(4, 3)
 		game = place(game, [][2]int{{0, 0}, {0, 1}, {1, 0}})
 		if game.Status != Running {

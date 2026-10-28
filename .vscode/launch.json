@@ -1,0 +1,62 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "tictactoe",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/tictactoe",
+      "args": [
+        "-model-dir",
+        "${workspaceFolder}/models"
+      ],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "datagen",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/datagen",
+      "args": [
+        "-gamma",
+        "0.9",
+        "-overwrite",
+        "-out",
+        "${workspaceFolder}/datasets/boards_3x3_perfect.ndjson"
+      ]
+    },
+    {
+      "name": "train",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/train",
+      "args": [
+        "-data",
+        "${workspaceFolder}/datasets/boards_3x3_perfect.ndjson",
+        "-out",
+        "${workspaceFolder}/tmp/scoremodel_3x3_mse_18-32-32-9.json",
+        "-hidden",
+        "32,32",
+        "-learning-rate",
+        "0.01",
+        "-loss",
+        "mse",
+        "-outcome-classes"
+      ]
+    },
+    {
+      "name": "xor",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/xor",
+      "args": [
+        "-runs",
+        "10"
+      ]
+    }
+  ]
+}

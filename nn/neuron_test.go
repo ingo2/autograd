@@ -78,7 +78,7 @@ func Test_Call_Tanh(t *testing.T) {
 	n.Weights[0].Data = 0.5
 	n.Weights[1].Data = -0.5
 	n.Bias.Data = 0.1
-	// pre-activation = -0.4; tanh(-0.4) ≈ -0.3799.
+	// pre-activation = -0.4; tanh(-0.4) ~ -0.3799.
 	want := math.Tanh(-0.4)
 	got := n.Call([]*Value{NewValue(2.0), NewValue(3.0)}, false)
 	if math.Abs(got.Data-want) > 1e-9 {

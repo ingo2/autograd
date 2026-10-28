@@ -181,7 +181,7 @@ func TestBestMoves_MaxDepthLimitsSearch(t *testing.T) {
 	}
 }
 
-// Two perfect players must always draw on a 3×3 board.
+// Two perfect players must always draw on a 3x3 board.
 func TestBestMoves_PerfectPlayAlwaysDraws(t *testing.T) {
 	rng := rand.New(rand.NewSource(0))
 	game := NewGame(3)
@@ -224,7 +224,7 @@ func TestEstimatedNodeCount(t *testing.T) {
 }
 
 // TestMinimax_NodeCounting verifies that evaluate() increments the node counter.
-// With MaxDepth=1 on an empty 3×3 board each of the 9 candidate moves triggers exactly one
+// With MaxDepth=1 on an empty 3x3 board each of the 9 candidate moves triggers exactly one
 // evaluate() call that hits the depth cap immediately -> 9 nodes total.
 // A search at MaxDepth=2 must visit strictly more nodes than MaxDepth=1.
 func TestMinimax_NodeCounting(t *testing.T) {
@@ -261,7 +261,7 @@ func TestMinimax_NodeCounting(t *testing.T) {
 //	- - X
 //
 // 5 empty cells remain. At depth 1 all five score as draw (O's threat at pos 2 is invisible).
-// At depth 2+ the search sees O would win immediately at pos 2 → only pos 2 is returned.
+// At depth 2+ the search sees O would win immediately at pos 2 -> only pos 2 is returned.
 func TestBestMoves_NodeBudget(t *testing.T) {
 	setup := func() Game {
 		game := NewGame(3)
@@ -290,7 +290,7 @@ func TestBestMoves_NodeBudget(t *testing.T) {
 		t.Errorf("depth-1 budget: Nodes got %d, want 5", shallow.Nodes)
 	}
 
-	// Budget = 1 000 000: deeper than any 3×3 search; result must match unlimited.
+	// Budget = 1000000: deeper than any 3x3 search; result must match unlimited.
 	unlimited, _ := BestMoves(setup(), cfg)
 	large, err :=
 		BestMoves(setup(), MinimaxConfig{Gamma: 0.9, NodeBudget: 1_000_000})
@@ -370,7 +370,7 @@ func TestMinimaxResult_Sanity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if res.Depth != 9 { // 3×3 board has 9 cells
+		if res.Depth != 9 { // 3x3 board has 9 cells
 			t.Errorf("Depth: got %d, want 9 (board size)", res.Depth)
 		}
 		if res.Nodes == 0 {
@@ -402,10 +402,10 @@ func TestMinimaxResult_Sanity(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if deeper.Depth < 2 {
-			t.Errorf("budget=6: want Depth≥2, got %d (Nodes=%d)", deeper.Depth, deeper.Nodes)
+			t.Errorf("budget=6: want Depth>=2, got %d (Nodes=%d)", deeper.Depth, deeper.Nodes)
 		}
 		if shallow.Depth >= deeper.Depth {
-			t.Errorf("depth should increase with budget: budget=5→Depth=%d, budget=6→Depth=%d",
+			t.Errorf("depth should increase with budget: budget=5->Depth=%d, budget=6->Depth=%d",
 				shallow.Depth, deeper.Depth)
 		}
 	})
@@ -429,7 +429,7 @@ func TestMinimaxResult_Sanity(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if withMin.Depth < 2 {
-			t.Errorf("budget=5 MinDepth=2: want Depth≥2, got %d (Nodes=%d)", withMin.Depth, withMin.Nodes)
+			t.Errorf("budget=5 MinDepth=2: want Depth>=2, got %d (Nodes=%d)", withMin.Depth, withMin.Nodes)
 		}
 		if withMin.Nodes <= withoutMin.Nodes {
 			t.Errorf("MinDepth=2 should consume more nodes than MinDepth=0: got %d vs %d",

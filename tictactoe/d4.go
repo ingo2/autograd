@@ -1,6 +1,6 @@
 package tictactoe
 
-// D4Perms returns the 7 non-identity permutations of the dihedral group D4 for an n×n board.
+// D4Perms returns the 7 non-identity permutations of the dihedral group D4 for an nxn board.
 // Each permutation p satisfies newBoard[i] = origBoard[p[i]], where cell (r, c) maps to r*n+c.
 func D4Perms(n int) [][]int {
 	mkPerm := func(f func(r, c int) (int, int)) []int {
