@@ -7,16 +7,17 @@ import (
 
 // DatasetInfo records dataset provenance for a saved model.
 type DatasetInfo struct {
-	File              string `json:"file"`
-	TrainSamples      int    `json:"trainSamples"`
-	TestSamples       int    `json:"testSamples"`
-	ValidationSamples int    `json:"validationSamples"`
+	File         string `json:"file"`
+	TrainSamples int    `json:"trainSamples"`
+	TestSamples  int    `json:"testSamples"`
 }
 
 // TrainConfig records the architecture and hyperparameters used to train a saved model.
 type TrainConfig struct {
 	Seed         int64 `json:"seed"`
 	Architecture []int `json:"architecture"`
+	// Name of the opponent for matchups during training, see TrainParams.MatchUpInterval.
+	MatchUpOpponent string `json:"matchUpOpponent,omitempty"`
 	TrainParams
 }
 

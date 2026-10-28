@@ -44,6 +44,14 @@
         "0.01",
         "-loss",
         "mse",
+        "-matchup-interval",
+        "5",
+        "-matchup-patience",
+        "3",
+        "-matchup-games",
+        "100",
+        "-matchup-opponent",
+        "minimax",
         "-outcome-classes"
       ]
     },

@@ -17,17 +17,18 @@ echo "==> Training score regression MLP..."
     -data          "${DATA}" \
     -out           "${OUT}" \
     -hidden        "32,32" \
-    -epochs             300 \
+    -epochs             400 \
+    -matchup-interval   32 \
+    -matchup-patience   3 \
+    -matchup-games      100 \
+    -matchup-opponent   minimax \
     -learning-rate      0.01 \
-    -patience           10 \
-    -test-patience      10 \
     -weight-decay       1e-4 \
     -activation-hidden  relu \
     -activation-out     tanh \
     -loss               mse \
-    -test-fraction       0.1 \
-    -validation-fraction 0.0 \
-    -outcome-classes     true
+    -test-fraction      0.1 \
+    -outcome-classes
 echo
 
 echo "Done."

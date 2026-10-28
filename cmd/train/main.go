@@ -17,8 +17,9 @@ import (
 
 const seed int64 = 42
 
-// matchUpGames is the number of games played against the matchup opponent during evaluation.
-const matchUpGames = 100
+// evalMatchUpGames is the number of games in the matchup against minimax after training. It is
+// fixed so that the results stay comparable between models.
+const evalMatchUpGames = 1000
 
 // parseActivation maps a name to the corresponding nn.ActivationFunc.
 func parseActivation(name string) (nn.ActivationFunc, error) {
@@ -50,7 +51,7 @@ func parseHidden(s string) ([]int, error) {
 }
 
 // saveResults writes the model weights (with info embedded) and dataset splits alongside outPath.
-func saveResults(outPath string, model *nn.MLP, info scoremodel.ModelInfo, train, test, validation []tictactoe.AnnotatedBoard) {
+func saveResults(outPath string, model *nn.MLP, info scoremodel.ModelInfo, train, test []tictactoe.AnnotatedBoard) {
 	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
 		log.Fatalf("failed to create output directory: %v", err)
 	}
@@ -66,7 +67,6 @@ func saveResults(outPath string, model *nn.MLP, info scoremodel.ModelInfo, train
 	}{
 		{"train", train},
 		{"test", test},
-		{"validation", validation},
 	} {
 		if len(split.boards) == 0 {
 			continue
@@ -83,13 +83,17 @@ func main() {
 	dataPath := flag.String("data", "", "path to annotated NDJSON file")
 	outPath := flag.String("out", "", "path to save trained model weights as JSON (optional)")
 	maxEpochs := flag.Int64("epochs", 300, "maximum number of training epochs")
-	testFraction := flag.Float64("test-fraction", 0.1, "fraction of the dataset held out for testing")
-	validationFraction := flag.Float64("validation-fraction", 0.0, "fraction of the dataset held out for validation")
+	testFraction := flag.Float64("test-fraction", 0.1,
+		"fraction of the dataset removed from training, only evaluated after training")
 	learningRate := flag.Float64("learning-rate", 0.075, "SGD learning rate")
 	weightDecay := flag.Float64("weight-decay", 0.0, "weight decay factor pulling weights towards zero")
-	patience := flag.Int64("patience", 0, "stop when best loss has not improved for this many epochs; 0 = disabled")
-	testPatience := flag.Int64("test-patience", 0,
-		"stop when best test loss has not improved for this many epochs; 0 = disabled")
+	matchUpInterval := flag.Int64("matchup-interval", 0,
+		"play a matchup every this many epochs, revert to the best model if not better; 0 = disabled")
+	matchUpPatience := flag.Int64("matchup-patience", 0,
+		"stop when the matchup score has not improved for this many matchups; 0 = disabled")
+	matchUpGames := flag.Int("matchup-games", 100, "number of games per matchup, alternating sides")
+	matchUpOpponentName := flag.String("matchup-opponent", "minimax",
+		"matchup opponent: minimax, or self (the best model so far)")
 	lossName := flag.String("loss", "mse", "loss function: mse, hinge, or crossentropy")
 	hingeMargin := flag.Float64("hinge-margin", 0.1, "margin for hinge loss (ignored for mse)")
 	activationHiddenName := flag.String("activation-hidden", "relu", "hidden layer activation: linear, relu, tanh")
@@ -115,23 +119,24 @@ func main() {
 	}
 	log.Printf("loaded %d samples", len(annotatedBoards))
 
-	train, test, validation, err :=
-		tictactoe.D4Split(annotatedBoards, *testFraction, *validationFraction,
-			rand.New(rand.NewSource(seed)))
+	// The split only removes boards from training. D4Split keeps the symmetric variants of a board
+	// together, so no removed board is seen in training in a rotated or mirrored form. No validation
+	// split is used.
+	train, test, _, err :=
+		tictactoe.D4Split(annotatedBoards, *testFraction, 0.0, rand.New(rand.NewSource(seed)))
 	if err != nil {
 		log.Fatalf("failed to split dataset: %v", err)
 	}
-	log.Printf("training set size: %d, test set size: %d, validation set size: %d",
-		len(train), len(test), len(validation))
+	log.Printf("training set size: %d, test set size: %d", len(train), len(test))
 
 	params := scoremodel.DefaultTrainParams()
 	params.MaxEpochs = *maxEpochs
 	params.LearningRate = *learningRate
 	params.WeightDecay = *weightDecay
-	params.Patience = *patience
-	params.TestPatience = *testPatience
+	params.MatchUpInterval = *matchUpInterval
+	params.MatchUpPatience = *matchUpPatience
+	params.MatchUpGames = *matchUpGames
 	params.HingeMargin = *hingeMargin
-	data := &scoremodel.TrainData{TrainBoards: train, TestBoards: test}
 	switch *lossName {
 	case "mse":
 		params.LossFunc = scoremodel.MSELoss
@@ -141,6 +146,15 @@ func main() {
 		params.LossFunc = scoremodel.CrossEntropyLoss
 	default:
 		log.Fatalf("unknown -loss %q: valid values are mse, hinge, crossentropy", *lossName)
+	}
+	var matchUpOpponent scoremodel.MatchUpOpponent
+	switch *matchUpOpponentName {
+	case "minimax":
+		matchUpOpponent = scoremodel.MinimaxOpponent(seed)
+	case "self":
+		matchUpOpponent = scoremodel.SelfPlayOpponent(seed)
+	default:
+		log.Fatalf("unknown -matchup-opponent %q: valid values are minimax, self", *matchUpOpponentName)
 	}
 	if act, err := parseActivation(*activationHiddenName); err != nil {
 		log.Fatalf("invalid -activation-hidden: %v", err)
@@ -165,14 +179,16 @@ func main() {
 	log.Printf("  learning-rate:     %g", params.LearningRate)
 	log.Printf("  weight-decay:      %g", params.WeightDecay)
 	log.Printf("  epochs:            %d", params.MaxEpochs)
-	log.Printf("  patience:          %d", params.Patience)
-	log.Printf("  test-patience:     %d", params.TestPatience)
+	log.Printf("  matchup-interval:  %d", params.MatchUpInterval)
+	log.Printf("  matchup-patience:  %d", params.MatchUpPatience)
+	log.Printf("  matchup-games:     %d", params.MatchUpGames)
+	log.Printf("  matchup-opponent:  %s", *matchUpOpponentName)
 
 	rng := rand.New(rand.NewSource(seed))
 	model := scoremodel.NewScoreModel(rng, hiddenSizes, params.ActivationHidden, params.ActivationOut)
 
 	trainStart := time.Now()
-	stats, err := scoremodel.TrainScoreModel(model, params, data, rng)
+	stats, err := scoremodel.TrainScoreModel(model, params, train, matchUpOpponent, rng)
 	if err != nil {
 		log.Fatalf("training failed: %v", err)
 	}
@@ -183,9 +199,14 @@ func main() {
 	log.Printf("training time: %d:%02d:%02d", hours, minutes, seconds)
 	log.Printf("training stats: loss(total): %g, epochs: %d",
 		stats.TotalLoss[len(stats.TotalLoss)-1], stats.Epochs)
-	if len(stats.TestLoss) > 0 {
-		log.Printf("training stats: loss(test): %g, best loss(test): %g",
-			stats.TestLoss[len(stats.TestLoss)-1], stats.BestTestLoss)
+	if len(stats.MatchUpScore) > 0 {
+		kept := 0
+		for _, k := range stats.MatchUpKept {
+			if k {
+				kept++
+			}
+		}
+		log.Printf("training stats: matchups: %d, kept: %d", len(stats.MatchUpScore), kept)
 	}
 
 	// Fraction of boards where the model's chosen move preserves the optimal outcome class.
@@ -211,7 +232,7 @@ func main() {
 	log.Printf("===== Matchup Strength =====")
 	opponent := tictactoe.MinimaxPlayer{
 		Rand: rand.New(rand.NewSource(seed)), MinimaxConfig: tictactoe.DefaultMinimaxConfig()}
-	matchUp := scoremodel.EvaluateMatchUp(model, opponent, matchUpGames)
+	matchUp := scoremodel.EvaluateMatchUp(model, opponent, evalMatchUpGames)
 	log.Printf("matchup vs %s (%d games): %d-%d-%d (score=%g)",
 		opponent.Identity(), matchUp.NumGames, matchUp.Wins, matchUp.Draws, matchUp.Losses,
 		matchUp.Score)
@@ -219,15 +240,15 @@ func main() {
 	if *outPath != "" {
 		info := scoremodel.ModelInfo{
 			Dataset: scoremodel.DatasetInfo{
-				File:              filepath.Base(*dataPath),
-				TrainSamples:      len(train),
-				TestSamples:       len(test),
-				ValidationSamples: len(validation),
+				File:         filepath.Base(*dataPath),
+				TrainSamples: len(train),
+				TestSamples:  len(test),
 			},
 			Config: scoremodel.TrainConfig{
-				Seed:         seed,
-				Architecture: archFull,
-				TrainParams:  *params,
+				Seed:            seed,
+				Architecture:    archFull,
+				MatchUpOpponent: *matchUpOpponentName,
+				TrainParams:     *params,
 			},
 			TrainStats:    stats,
 			TrainGameTree: trainGameTree,
@@ -235,6 +256,6 @@ func main() {
 			Perfection:    perfection,
 			MatchUp:       matchUp,
 		}
-		saveResults(*outPath, model, info, train, test, validation)
+		saveResults(*outPath, model, info, train, test)
 	}
 }

@@ -102,6 +102,24 @@ func (m MLP) Biases() []*Value {
 	return biases
 }
 
+// Clone returns a deep copy of the MLP with the same architecture, activations and parameter
+// values. Gradients are reset and no Value is shared with the original.
+func (m MLP) Clone() *MLP {
+	layers := make([]*Layer, len(m.Layers))
+	for k, layer := range m.Layers {
+		neurons := make([]*Neuron, len(layer.Neurons))
+		for i, n := range layer.Neurons {
+			weights := make([]*Value, len(n.Weights))
+			for j, w := range n.Weights {
+				weights[j] = NewValue(w.Data)
+			}
+			neurons[i] = &Neuron{Weights: weights, Bias: NewValue(n.Bias.Data), Activation: n.Activation}
+		}
+		layers[k] = &Layer{Neurons: neurons}
+	}
+	return &MLP{Layers: layers}
+}
+
 func (m MLP) ToString() string {
 	parts := make([]string, len(m.Layers))
 	for i, l := range m.Layers {

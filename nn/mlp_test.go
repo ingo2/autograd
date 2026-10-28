@@ -42,6 +42,40 @@ func Test_MLP_InputSize(t *testing.T) {
 	}
 }
 
+func Test_MLP_Clone(t *testing.T) {
+	src := NewMLP(rand.New(rand.NewSource(0)), []int{2, 3, 1}, []ActivationFunc{ReLU, Tanh})
+	src.Params()[0].Grad = 1.0
+	clone := src.Clone()
+
+	srcParams := src.Params()
+	cloneParams := clone.Params()
+	if len(cloneParams) != len(srcParams) {
+		t.Fatalf("clone has %d params, want %d", len(cloneParams), len(srcParams))
+	}
+	for i := range srcParams {
+		if cloneParams[i] == srcParams[i] {
+			t.Fatalf("param %d: clone shares the Value with the original", i)
+		}
+		if cloneParams[i].Data != srcParams[i].Data {
+			t.Errorf("param %d: clone %g, want %g", i, cloneParams[i].Data, srcParams[i].Data)
+		}
+	}
+	if cloneParams[0].Grad != 0 {
+		t.Errorf("clone grad = %g, want 0", cloneParams[0].Grad)
+	}
+
+	inputs := []*Value{NewValue(0.5), NewValue(-1.0)}
+	if got, want := clone.Call(inputs, true)[0].Data, src.Call(inputs, true)[0].Data; got != want {
+		t.Errorf("clone output %g, want %g", got, want)
+	}
+
+	// Changing the clone leaves the original untouched.
+	cloneParams[0].Data += 1.0
+	if srcParams[0].Data == cloneParams[0].Data {
+		t.Error("changing the clone changed the original")
+	}
+}
+
 func Test_NewMLP_PanicsOnTooFewSizes(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {

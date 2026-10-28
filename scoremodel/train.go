@@ -5,7 +5,6 @@ import (
 	"autograd/tictactoe"
 	"fmt"
 	"io"
-	"math"
 	"math/rand"
 	"os"
 )
@@ -18,11 +17,18 @@ type TrainParams struct {
 	// Used to counter overfitting. Pulls each weight with a small factor towards zero; 0 = disabled.
 	// Typical values are between 1e-4 and 1e-2.
 	WeightDecay float64 `json:"weightDecay"`
-	// Stop when best loss has not improved for this many epochs; 0 = disabled.
-	Patience int64 `json:"patience"`
-	// Stop when best test loss has not improved for this many epochs; 0 = disabled. Requires
-	// TestBoards to be non-empty; ignored otherwise.
-	TestPatience int64 `json:"testPatience"`
+	// Play a matchup against the opponent passed to TrainScoreModel every this many epochs and after
+	// the last epoch; 0 = disabled. Must not exceed MaxEpochs. The first matchup always keeps the
+	// model. After that, the model is kept if it scores higher than the best model so far against
+	// the same opponent, or the same with a lower train loss. Otherwise it is reverted to the best
+	// model.
+	MatchUpInterval int64 `json:"matchUpInterval"`
+	// Stop when the matchup score has not improved for this many matchups; 0 = disabled. A model kept
+	// only for its lower train loss does not count as an improvement. Requires MatchUpInterval > 0;
+	// ignored otherwise.
+	MatchUpPatience int64 `json:"matchUpPatience"`
+	// Number of games per matchup, alternating sides.
+	MatchUpGames int `json:"matchUpGames"`
 	// SGD step size applied to each parameter after every sample.
 	LearningRate float64 `json:"learningRate"`
 	// Per-sample loss function used during training.
@@ -35,38 +41,29 @@ type TrainParams struct {
 	ActivationOut nn.ActivationFunc `json:"activationOut"`
 }
 
-// TrainData holds the training and held-out evaluation samples for TrainScoreModel.
-type TrainData struct {
-	// Training data used to fit the model.
-	TrainBoards []tictactoe.AnnotatedBoard
-	// Held-out data used to monitor generalization during training.
-	TestBoards []tictactoe.AnnotatedBoard
-}
-
 // TrainStats records per-epoch metrics from a completed training run.
-// TestLossDelta[0] is math.MaxFloat64 (no previous epoch to diff against).
 type TrainStats struct {
 	// Number of epochs that were actually run.
 	Epochs int64 `json:"epochs"`
-	// Lowest total loss observed during training.
-	BestLoss float64 `json:"bestLoss"`
-	// BestTestLoss is the lowest value in TestLoss; 0 when TestLoss is empty.
-	BestTestLoss float64 `json:"bestTestLoss,omitempty"`
 	// Mean loss across all samples, one entry per epoch.
 	TotalLoss []float64 `json:"totalLoss"`
-	// TestLoss[i] is the mean LossFunc loss over TestBoards after epoch i+1 (forward pass only).
-	// Empty when TestBoards is empty.
-	TestLoss []float64 `json:"testLoss,omitempty"`
-	// TestLossDelta[i] is TestLoss[i-1] - TestLoss[i]; TestLossDelta[0] is math.MaxFloat64.
-	TestLossDelta []float64 `json:"testLossDelta,omitempty"`
+	// MatchUpScore[i] is the model's score in the (i+1)-th matchup. Empty when MatchUpInterval is 0.
+	MatchUpScore []float64 `json:"matchUpScore,omitempty"`
+	// MatchUpBestScore[i] is the best model's score against the same opponent.
+	MatchUpBestScore []float64 `json:"matchUpBestScore,omitempty"`
+	// MatchUpKept[i] tells whether the model was kept or reverted. Except for the first matchup,
+	// which always keeps the model. A model is kept if MatchUpScore[i] > MatchUpBestScore[i], or if
+	// both are equal and its train loss is lower than the best model's.
+	MatchUpKept []bool `json:"matchUpKept,omitempty"`
 }
 
 // DefaultTrainParams returns TrainParams with defaults for 3x3 score regression.
 func DefaultTrainParams() *TrainParams {
 	return &TrainParams{
 		MaxEpochs:        300,
-		Patience:         10,
-		TestPatience:     10,
+		MatchUpInterval:  0,
+		MatchUpPatience:  0,
+		MatchUpGames:     100,
 		LearningRate:     0.05,
 		LossFunc:         MSELoss,
 		WeightDecay:      0.0,
@@ -74,20 +71,6 @@ func DefaultTrainParams() *TrainParams {
 		ActivationHidden: nn.ReLU,
 		ActivationOut:    nn.Tanh,
 	}
-}
-
-// evaluateLoss returns the mean LossFunc loss over boards, using a forward pass only (no
-// backward, no parameter updates).
-func evaluateLoss(model *nn.MLP, boards []tictactoe.AnnotatedBoard, lossFunc LossFunc) float64 {
-	inputs := BoardsToScoreModelInputs(boards)
-	outputs := BoardsToScoreModelOutputs(boards)
-	total := 0.0
-	for k, ab := range boards {
-		scores := model.Call(inputs[k], true)
-		validMoves := tictactoe.AvailableMoves(ab.Board)
-		total += lossFunc.Call(scores, outputs[k], validMoves).Data
-	}
-	return total / float64(len(boards))
 }
 
 // snapshotParams returns a copy of the current value of every parameter (weight and bias) in model.
@@ -107,26 +90,98 @@ func restoreParams(model *nn.MLP, snapshot []float64) {
 	}
 }
 
-// bestTracker tracks the lowest loss seen so far and the number of epochs since it last improved.
-type bestTracker struct {
-	best      float64
-	sinceBest int64
-}
+// MatchUpOpponent returns a new opponent for one matchup during training. best is the best model so
+// far, which lets the model play against its own best version (see SelfPlayOpponent).
+type MatchUpOpponent func(best *nn.MLP) tictactoe.AIPlayer
 
-// newBestTracker returns a bestTracker with no loss recorded yet.
-func newBestTracker() bestTracker {
-	return bestTracker{best: math.MaxFloat64}
-}
-
-// update records loss and reports whether it is a new best.
-func (t *bestTracker) update(loss float64) bool {
-	if loss < t.best {
-		t.best = loss
-		t.sinceBest = 0
-		return true
+// MinimaxOpponent returns a MatchUpOpponent that plays perfect minimax. Each opponent gets a new
+// Rand with the same seed, so every matchup is played against the same opponent.
+func MinimaxOpponent(seed int64) MatchUpOpponent {
+	return func(*nn.MLP) tictactoe.AIPlayer {
+		return tictactoe.MinimaxPlayer{
+			Rand: rand.New(rand.NewSource(seed)), MinimaxConfig: tictactoe.DefaultMinimaxConfig()}
 	}
-	t.sinceBest++
-	return false
+}
+
+// In training matchups, score model players pick randomly among their matchUpTopK highest-scored
+// moves within matchUpMargin of the best one. This varies the games,especially for self-play, while
+// a move the model rates clearly best is still always played.
+const (
+	matchUpTopK   = 3
+	matchUpMargin = 0.1
+)
+
+// newMatchUpPlayer returns a player for model that picks randomly among its best moves (see
+// matchUpTopK), with a new Rand seeded with seed.
+func newMatchUpPlayer(model *nn.MLP, seed int64) tictactoe.AIPlayer {
+	return newSampledScoreModelPlayer(model, rand.New(rand.NewSource(seed)), matchUpTopK,
+		matchUpMargin)
+}
+
+// SelfPlayOpponent returns a MatchUpOpponent that lets the model play against the best model so
+// far. Like the model, it picks randomly among its best moves (see matchUpTopK). Each opponent gets
+// a new Rand with the same seed, so every matchup is played against the same opponent.
+func SelfPlayOpponent(seed int64) MatchUpOpponent {
+	return func(best *nn.MLP) tictactoe.AIPlayer {
+		return newMatchUpPlayer(best, seed)
+	}
+}
+
+// matchUpGate holds the best model so far. After the first matchup, a model replaces it only if it
+// scores higher against the opponent than the best model itself does, or the same with a lower
+// train loss; otherwise the model is reverted to the best one.
+type matchUpGate struct {
+	opponent      MatchUpOpponent
+	games         int
+	seed          int64   // seed of the model's and best model's players, the same in every matchup
+	best          *nn.MLP // copy of the best model so far, initially the untrained model
+	bestLoss      float64 // train loss of best; unset before the first matchup
+	sinceImproved int64   // matchups since the score last improved
+	played        bool    // whether a matchup has been played yet
+}
+
+// matchUpResult describes one matchup played by matchUpGate.check and the decision taken on it.
+type matchUpResult struct {
+	matchUp       MatchUpStats // model's matchup result
+	bestScore     float64      // best model's score against the same opponent
+	loss          float64      // model's train loss
+	bestLoss      float64      // best model's train loss, compared when the scores are equal
+	first         bool         // whether this was the first matchup, which always keeps model
+	kept          bool         // whether model was kept or reverted to the best one
+	sinceImproved int64        // matchups since the score last improved, after the decision
+}
+
+// playMatch plays a matchup with model and one with the best model, both against the opponent. Both
+// pick randomly among their best moves, with the same seed, so equal models get equal scores. loss
+// is model's train loss. model replaces the best model if this is the first matchup, if it scores
+// higher, or if it scores the same with a lower loss; otherwise model is reverted to the best one.
+// Only the first matchup and a higher score reset sinceImproved.
+func (g *matchUpGate) playMatch(model *nn.MLP, loss float64) matchUpResult {
+	r := matchUpResult{
+		matchUp:   playMatchUp(newMatchUpPlayer(model, g.seed), g.opponent(g.best), g.games),
+		bestScore: playMatchUp(newMatchUpPlayer(g.best, g.seed), g.opponent(g.best), g.games).Score,
+		loss:      loss,
+		bestLoss:  g.bestLoss,
+		// Keeping the first matchup unconditionally means the first interval of training is never
+		// thrown away in favor of the untrained model.
+		first: !g.played,
+	}
+	g.played = true
+	improved := r.first || r.matchUp.Score > r.bestScore
+	r.kept = improved || (r.matchUp.Score == r.bestScore && loss < g.bestLoss)
+	if r.kept {
+		restoreParams(g.best, snapshotParams(model))
+		g.bestLoss = loss
+	} else {
+		restoreParams(model, snapshotParams(g.best))
+	}
+	if improved {
+		g.sinceImproved = 0
+	} else {
+		g.sinceImproved++
+	}
+	r.sinceImproved = g.sinceImproved
+	return r
 }
 
 // trainEpoch runs one online-SGD pass over boards in random order and returns the mean loss.
@@ -159,92 +214,106 @@ func trainEpoch(model *nn.MLP, params *TrainParams, boards []tictactoe.Annotated
 	return totalLoss / float64(len(boards))
 }
 
-// appendTestLoss records testLoss and its delta to the previous epoch's test loss.
-func (s *TrainStats) appendTestLoss(testLoss float64) {
-	testDelta := math.MaxFloat64
-	if len(s.TestLoss) > 0 {
-		testDelta = s.TestLoss[len(s.TestLoss)-1] - testLoss
-	}
-	s.TestLoss = append(s.TestLoss, testLoss)
-	s.TestLossDelta = append(s.TestLossDelta, testDelta)
+// logEpoch writes a one-line progress report for epoch to w.
+func logEpoch(w io.Writer, epoch int64, trainLoss float64) {
+	fmt.Fprintf(w, "e: %d, loss(total): %g\n", epoch, trainLoss)
 }
 
-// logEpoch writes a one-line progress report for epoch to w. The test loss columns are only
-// written when hasTestBoards is true.
-func logEpoch(w io.Writer, epoch int64, trainLoss float64, trainBest bestTracker, hasTestBoards bool,
-	testLoss float64, testBest bestTracker) {
-	if hasTestBoards {
-		fmt.Fprintf(w, "e: %d, loss(total): %g, noimprove: %d, "+
-			"loss(test): %g, noimprove(test): %d\n",
-			epoch, trainLoss, trainBest.sinceBest, testLoss, testBest.sinceBest)
-	} else {
-		fmt.Fprintf(w, "e: %d, loss(total): %g, noimprove: %d\n",
-			epoch, trainLoss, trainBest.sinceBest)
+// logMatchUp writes a one-line report of the matchup r played after epoch to w. The scores are
+// compared against the best model's, the bar the model had to beat; on a tie, the losses are shown
+// as well, since they decide.
+func logMatchUp(w io.Writer, epoch int64, r matchUpResult) {
+	cmp := "="
+	switch {
+	case r.matchUp.Score > r.bestScore:
+		cmp = ">"
+	case r.matchUp.Score < r.bestScore:
+		cmp = "<"
 	}
+	line := fmt.Sprintf("e: %d, matchup: %d-%d-%d, score: %g %s best: %g", epoch, r.matchUp.Wins,
+		r.matchUp.Draws, r.matchUp.Losses, r.matchUp.Score, cmp, r.bestScore)
+	// The first matchup has no best loss to compare to.
+	if cmp == "=" && !r.first {
+		lossCmp := ">="
+		if r.loss < r.bestLoss {
+			lossCmp = "<"
+		}
+		line += fmt.Sprintf(", loss: %g %s best: %g", r.loss, lossCmp, r.bestLoss)
+	}
+	action := "reverted"
+	switch {
+	case r.first:
+		action = "kept as first matchup"
+	case r.kept:
+		action = "kept as new best"
+	}
+	fmt.Fprintf(w, "%s, %s, noimprove: %d\n", line, action, r.sinceImproved)
 }
 
 // TrainScoreModel trains model on samples using online SGD (one weight update per sample).
 // Loss is computed by params.LossFunc over valid moves only; occupied cells are masked out and do
 // not contribute.
-// On return, model holds the weights from the best epoch: the lowest test loss if TestBoards is
-// non-empty, otherwise the lowest train loss.
-func TrainScoreModel(model *nn.MLP, params *TrainParams, data *TrainData, rng *rand.Rand) (TrainStats, error) {
-	if len(data.TrainBoards) == 0 {
+// If params.MatchUpInterval > 0, model plays a matchup against opponent every MatchUpInterval
+// epochs and after the last epoch, so no trained epoch goes unchecked. The first matchup always
+// keeps model. After that, model is kept if it scores higher than the best model so far against
+// the same opponent, or the same with a lower train loss. Otherwise it is reverted to the best
+// model and training continues from there. In the matchups, model and the best model pick randomly
+// among their best moves (see matchUpTopK).
+// opponent is ignored when matchups are disabled and may be nil then. On return, model holds the
+// weights of the best model if matchups are enabled, otherwise the weights after the last epoch.
+func TrainScoreModel(model *nn.MLP, params *TrainParams, boards []tictactoe.AnnotatedBoard, opponent MatchUpOpponent, rng *rand.Rand) (TrainStats, error) {
+	if len(boards) == 0 {
 		return TrainStats{}, fmt.Errorf("no training boards")
 	}
-	// When test data is provided, evaluate and record the held-out loss and its delta each epoch.
-	// This feeds best-epoch tracking and the TestPatience stop criterion below.
-	hasTestBoards := len(data.TestBoards) > 0
+	if params.MatchUpInterval > 0 && params.MatchUpGames <= 0 {
+		return TrainStats{}, fmt.Errorf("matchup interval %d requires matchup games > 0, got %d",
+			params.MatchUpInterval, params.MatchUpGames)
+	}
+	if params.MatchUpInterval > 0 && opponent == nil {
+		return TrainStats{}, fmt.Errorf("matchup interval %d requires an opponent",
+			params.MatchUpInterval)
+	}
+	if params.MatchUpInterval > params.MaxEpochs {
+		return TrainStats{}, fmt.Errorf("matchup interval %d exceeds max epochs %d",
+			params.MatchUpInterval, params.MaxEpochs)
+	}
+	// When matchups are enabled, they select the returned model and drive the MatchUpPatience stop
+	// criterion below.
+	var gate *matchUpGate
+	if params.MatchUpInterval > 0 {
+		gate = &matchUpGate{opponent: opponent, games: params.MatchUpGames, seed: rng.Int63(),
+			best: model.Clone()}
+	}
 
-	inputs := BoardsToScoreModelInputs(data.TrainBoards)
-	outputs := BoardsToScoreModelOutputs(data.TrainBoards)
+	inputs := BoardsToScoreModelInputs(boards)
+	outputs := BoardsToScoreModelOutputs(boards)
 	stats := TrainStats{
 		TotalLoss: make([]float64, 0, params.MaxEpochs),
 	}
-	trainBest := newBestTracker()
-	testBest := newBestTracker()
-	var bestParams []float64
 	for i := range params.MaxEpochs {
-		totalLoss := trainEpoch(model, params, data.TrainBoards, inputs, outputs, rng)
+		totalLoss := trainEpoch(model, params, boards, inputs, outputs, rng)
 		stats.TotalLoss = append(stats.TotalLoss, totalLoss)
 		stats.Epochs = i + 1
+		logEpoch(os.Stdout, i, totalLoss)
 
-		var testLoss float64
-		if hasTestBoards {
-			testLoss = evaluateLoss(model, data.TestBoards, params.LossFunc)
-			stats.appendTestLoss(testLoss)
-		}
-
-		// Track the best epoch so far (by test loss if available, otherwise by train loss) and the
-		// number of epochs since either last improved; these drive Patience/TestPatience below.
-		if trainBest.update(totalLoss) && !hasTestBoards {
-			bestParams = snapshotParams(model)
-		}
-		if hasTestBoards && testBest.update(testLoss) {
-			bestParams = snapshotParams(model)
-		}
-
-		logEpoch(os.Stdout, i, totalLoss, trainBest, hasTestBoards, testLoss, testBest)
-
-		if params.Patience > 0 && trainBest.sinceBest >= params.Patience {
-			fmt.Printf("termination: no improvement for %d epochs (patience: %d)\n",
-				trainBest.sinceBest, params.Patience)
-			break
-		}
-		if hasTestBoards && params.TestPatience > 0 && testBest.sinceBest >= params.TestPatience {
-			fmt.Printf("termination: test loss has not improved for %d epochs (test-patience: %d)\n",
-				testBest.sinceBest, params.TestPatience)
-			break
+		if gate != nil && ((i+1)%params.MatchUpInterval == 0 || i+1 == params.MaxEpochs) {
+			r := gate.playMatch(model, totalLoss)
+			stats.MatchUpScore = append(stats.MatchUpScore, r.matchUp.Score)
+			stats.MatchUpBestScore = append(stats.MatchUpBestScore, r.bestScore)
+			stats.MatchUpKept = append(stats.MatchUpKept, r.kept)
+			logMatchUp(os.Stdout, i, r)
+			if params.MatchUpPatience > 0 && gate.sinceImproved >= params.MatchUpPatience {
+				fmt.Printf("termination: matchup score has not improved for %d matchups "+
+					"(matchup-patience: %d)\n", gate.sinceImproved, params.MatchUpPatience)
+				break
+			}
 		}
 	}
 
-	if bestParams != nil {
-		restoreParams(model, bestParams)
-	}
-
-	stats.BestLoss = trainBest.best
-	if hasTestBoards {
-		stats.BestTestLoss = testBest.best
+	// The loop always ends right after a matchup, which already leaves model at the best one. This
+	// keeps the returned model correct for any future exit path.
+	if gate != nil {
+		restoreParams(model, snapshotParams(gate.best))
 	}
 	return stats, nil
 }

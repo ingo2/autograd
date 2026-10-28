@@ -165,24 +165,29 @@ func EvaluateStandardStats(model *nn.MLP, samples []tictactoe.AnnotatedBoard) St
 // which side the model takes to avoid first-move bias. The caller is responsible for configuring
 // opponent (including its Rand) before passing it in.
 func EvaluateMatchUp(model *nn.MLP, opponent tictactoe.AIPlayer, numGames int) MatchUpStats {
+	return playMatchUp(NewScoreModelPlayerFromModel(model), opponent, numGames)
+}
+
+// playMatchUp plays numGames between player and opponent, alternating which side player takes, and
+// returns the results from player's point of view.
+func playMatchUp(player, opponent tictactoe.AIPlayer, numGames int) MatchUpStats {
 	if numGames <= 0 {
 		return MatchUpStats{}
 	}
-	mlp := NewScoreModelPlayerFromModel(model)
 
 	wins, draws, losses := 0, 0, 0
 	for i := range numGames {
-		mlpMark := tictactoe.X
+		playerMark := tictactoe.X
 		if i%2 != 0 {
-			mlpMark = tictactoe.O
+			playerMark = tictactoe.O
 		}
 		game := tictactoe.NewConnectNGame(3, 3)
 
 		for game.Status == tictactoe.Running {
 			var col, row int
 			var err error
-			if game.ActivePlayer == mlpMark {
-				col, row, err = mlp.Move(game)
+			if game.ActivePlayer == playerMark {
+				col, row, err = player.Move(game)
 			} else {
 				col, row, err = opponent.Move(game)
 			}
@@ -197,7 +202,7 @@ func EvaluateMatchUp(model *nn.MLP, opponent tictactoe.AIPlayer, numGames int) M
 
 		switch game.Status {
 		case tictactoe.Won:
-			if game.Winner == mlpMark {
+			if game.Winner == playerMark {
 				wins++
 			} else {
 				losses++

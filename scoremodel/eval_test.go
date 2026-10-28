@@ -7,6 +7,23 @@ import (
 	"testing"
 )
 
+func TestPlayMatchUp(t *testing.T) {
+	perfect := tictactoe.MinimaxPlayer{
+		Rand: rand.New(rand.NewSource(1)), MinimaxConfig: tictactoe.DefaultMinimaxConfig()}
+	// All scores equal: the deterministic player always plays the first free cell.
+	weak := NewScoreModelPlayerFromModel(fixedScoreMLP(0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+	// The results are from player's point of view: perfect minimax never loses, and beats the weak
+	// player.
+	ps := playMatchUp(perfect, weak, 10)
+	if ps.NumGames != 10 || ps.Wins+ps.Draws+ps.Losses != 10 {
+		t.Fatalf("got %+v, want 10 games", ps)
+	}
+	if ps.Losses != 0 || ps.Wins == 0 {
+		t.Errorf("perfect vs weak: %d-%d-%d, want wins and no losses", ps.Wins, ps.Draws, ps.Losses)
+	}
+}
+
 func TestEvaluateMatchUp(t *testing.T) {
 	const seed = 99
 

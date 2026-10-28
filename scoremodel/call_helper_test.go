@@ -34,6 +34,31 @@ func valuesOf(data ...float64) []*nn.Value {
 	return values
 }
 
+func Test_topPositionsFromValues(t *testing.T) {
+	tests := []struct {
+		name       string
+		inputs     []float64
+		validMoves []int
+		want       []int
+	}{
+		{"clear best", []float64{0.9, 0.1, 0.2, 0.3}, []int{0, 1, 2, 3}, []int{0}},
+		{"within margin, best first", []float64{0.85, 0.9, 0.1, 0.82}, []int{0, 1, 2, 3},
+			[]int{1, 0, 3}},
+		{"limited to k", []float64{0.9, 0.9, 0.9, 0.9}, []int{0, 1, 2, 3}, []int{0, 1, 2}},
+		{"restricted to valid moves", []float64{1.0, 0.9, 0.9, 0.2}, []int{1, 2, 3}, []int{1, 2}},
+		{"fewer valid moves than k", []float64{0.5, 0.0, 0.5, 0.0}, []int{0, 2}, []int{0, 2}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := topPositionsFromValues(identityMLP(4), tt.validMoves, valuesOf(tt.inputs...), 3,
+				0.1)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func Test_BestPositionFromValues_SingleMax(t *testing.T) {
 	mlp := identityMLP(3)
 	inputs := valuesOf(0.1, 0.9, 0.5)

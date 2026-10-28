@@ -32,10 +32,9 @@ func TestTrainScoreModel_FullCycle(t *testing.T) {
 	// Training loop.
 	params := DefaultTrainParams()
 	params.MaxEpochs = 5 // cap as our autograd engine is very slow.
-	data := &TrainData{TrainBoards: train, TestBoards: test}
 	model := NewScoreModel(rand.New(rand.NewSource(seed)), []int{32}, nn.ReLU, nn.Tanh)
 
-	stats, err := TrainScoreModel(model, params, data, rand.New(rand.NewSource(0)))
+	stats, err := TrainScoreModel(model, params, train, nil, rand.New(rand.NewSource(0)))
 	if err != nil {
 		t.Fatalf("TrainScoreModel failed: %v", err)
 	}
@@ -54,26 +53,6 @@ func TestTrainScoreModel_FullCycle(t *testing.T) {
 		}
 	}
 
-	if stats.BestLoss > stats.TotalLoss[len(stats.TotalLoss)-1] {
-		t.Errorf("BestLoss (%g) must be <= final TotalLoss (%g)",
-			stats.BestLoss, stats.TotalLoss[len(stats.TotalLoss)-1])
-	}
-
-	if len(stats.TestLoss) != int(stats.Epochs) {
-		t.Errorf("len(TestLoss) = %d, want %d", len(stats.TestLoss), stats.Epochs)
-	}
-	if len(stats.TestLossDelta) != int(stats.Epochs) {
-		t.Errorf("len(TestLossDelta) = %d, want %d", len(stats.TestLossDelta), stats.Epochs)
-	}
-	if stats.TestLossDelta[0] != math.MaxFloat64 {
-		t.Errorf("TestLossDelta[0] = %g, want %g", stats.TestLossDelta[0], math.MaxFloat64)
-	}
-
-	gotTestLoss := evaluateLoss(model, test, params.LossFunc)
-	if math.Abs(gotTestLoss-stats.BestTestLoss) > 1e-9 {
-		t.Errorf("returned model's test loss = %g, want BestTestLoss = %g", gotTestLoss, stats.BestTestLoss)
-	}
-
 	eval := EvaluateStandardStats(model, test)
 	t.Logf("eval: mse=%g (min=%g max=%g)",
 		eval.MSE, eval.MSEMin, eval.MSEMax)
@@ -82,72 +61,7 @@ func TestTrainScoreModel_FullCycle(t *testing.T) {
 	}
 }
 
-func TestTrainScoreModel_PatienceStops(t *testing.T) {
-	const seed = 99
-
-	cfg := tictactoe.MinimaxConfig{
-		MaxDepth: 0, NodeBudget: 0, Gamma: 0.9}
-	boards := tictactoe.DeduplicateBoards(tictactoe.FilterBoards(tictactoe.Enumerate3x3Boards()))
-	samples := make([]tictactoe.AnnotatedBoard, len(boards))
-	for i, b := range boards {
-		samples[i] = tictactoe.AnnotateCanonicalBoard(b, tictactoe.X, cfg)
-	}
-
-	const patience = int64(3)
-	params := DefaultTrainParams()
-	params.MaxEpochs = 500
-	params.Patience = patience
-	params.LearningRate = 0.0 // zero LR: weights never change, loss never improves
-	data := &TrainData{TrainBoards: samples}
-	model := NewScoreModel(rand.New(rand.NewSource(seed)), []int{8}, nn.ReLU, nn.Tanh)
-
-	stats, err := TrainScoreModel(model, params, data, rand.New(rand.NewSource(0)))
-	if err != nil {
-		t.Fatalf("TrainScoreModel failed: %v", err)
-	}
-
-	if stats.Epochs >= params.MaxEpochs {
-		t.Errorf("expected patience to stop training before MaxEpochs, but ran %d epochs", stats.Epochs)
-	}
-	t.Logf("patience=%d stopped at epoch %d (best loss %g)", patience, stats.Epochs, stats.BestLoss)
-}
-
-func TestTrainScoreModel_TestPatienceStops(t *testing.T) {
-	const seed = 99
-
-	cfg := tictactoe.MinimaxConfig{
-		MaxDepth: 0, NodeBudget: 0, Gamma: 0.9}
-	boards := tictactoe.DeduplicateBoards(tictactoe.FilterBoards(tictactoe.Enumerate3x3Boards()))
-	samples := make([]tictactoe.AnnotatedBoard, len(boards))
-	for i, b := range boards {
-		samples[i] = tictactoe.AnnotateCanonicalBoard(b, tictactoe.X, cfg)
-	}
-
-	const testPatience = int64(3)
-	params := DefaultTrainParams()
-	params.MaxEpochs = 500
-	params.Patience = 0 // disabled, to isolate test-patience
-	params.TestPatience = testPatience
-	params.LearningRate = 0.0 // zero LR: weights never change, loss never improves
-	data := &TrainData{TrainBoards: samples, TestBoards: samples}
-	model := NewScoreModel(rand.New(rand.NewSource(seed)), []int{8}, nn.ReLU, nn.Tanh)
-
-	stats, err := TrainScoreModel(model, params, data, rand.New(rand.NewSource(0)))
-	if err != nil {
-		t.Fatalf("TrainScoreModel failed: %v", err)
-	}
-
-	if stats.Epochs >= params.MaxEpochs {
-		t.Errorf("expected test-patience to stop training before MaxEpochs, but ran %d epochs", stats.Epochs)
-	}
-	if len(stats.TestLoss) != int(stats.Epochs) {
-		t.Errorf("len(TestLoss) = %d, want %d", len(stats.TestLoss), stats.Epochs)
-	}
-	t.Logf("test-patience=%d stopped at epoch %d (best test loss %g)",
-		testPatience, stats.Epochs, stats.BestTestLoss)
-}
-
-func TestTrainScoreModel_RestoresBestModel_NoTestBoards(t *testing.T) {
+func TestTrainScoreModel_KeepsLastModel(t *testing.T) {
 	const seed = 99
 
 	cfg := tictactoe.MinimaxConfig{
@@ -167,50 +81,38 @@ func TestTrainScoreModel_RestoresBestModel_NoTestBoards(t *testing.T) {
 	}
 
 	params := DefaultTrainParams()
-	// A large learning rate makes the loss worsen after the first epoch, so the best epoch (epoch 1)
-	// is not the last one.
+	// A large learning rate makes the loss worsen after the first epoch, so the epoch with the
+	// lowest loss (epoch 1) is not the last one.
 	params.LearningRate = 0.5
-	data := &TrainData{TrainBoards: train}
+	params.MaxEpochs = 3
 
-	// Run A: train for a single epoch. Since this is the only (and therefore best) epoch, the
-	// returned model is exactly the post-epoch-1 weights.
-	params.MaxEpochs = 1
+	// Run A: TrainScoreModel without matchups.
 	modelA := NewScoreModel(rand.New(rand.NewSource(seed)), []int{32}, nn.ReLU, nn.Tanh)
-	statsA, err := TrainScoreModel(modelA, params, data, rand.New(rand.NewSource(0)))
+	statsA, err := TrainScoreModel(modelA, params, train, nil, rand.New(rand.NewSource(0)))
 	if err != nil {
-		t.Fatalf("TrainScoreModel (run A) failed: %v", err)
+		t.Fatalf("TrainScoreModel failed: %v", err)
 	}
-
-	// Run B: train for several epochs, starting from the same initial weights and consuming the rng
-	// identically. Epoch 1 should remain the best epoch, so the restored model should match modelA's
-	// post-epoch-1 weights, even though training continued for more epochs.
-	params.MaxEpochs = 5
-	modelB := NewScoreModel(rand.New(rand.NewSource(seed)), []int{32}, nn.ReLU, nn.Tanh)
-	statsB, err := TrainScoreModel(modelB, params, data, rand.New(rand.NewSource(0)))
-	if err != nil {
-		t.Fatalf("TrainScoreModel (run B) failed: %v", err)
+	if statsA.Epochs != params.MaxEpochs {
+		t.Fatalf("Epochs = %d, want %d", statsA.Epochs, params.MaxEpochs)
 	}
-
-	if statsB.Epochs <= 1 {
-		t.Fatalf("expected run B to run more than 1 epoch, got %d", statsB.Epochs)
-	}
-	if statsB.TotalLoss[1] <= statsB.TotalLoss[0] {
+	if statsA.TotalLoss[1] <= statsA.TotalLoss[0] {
 		t.Fatalf("expected loss to worsen after epoch 1, got epoch1=%g, epoch2=%g",
-			statsB.TotalLoss[0], statsB.TotalLoss[1])
-	}
-	if statsA.BestLoss != statsB.BestLoss {
-		t.Errorf("BestLoss mismatch: run A=%g, run B=%g", statsA.BestLoss, statsB.BestLoss)
-	}
-	if statsB.BestTestLoss != 0 {
-		t.Errorf("BestTestLoss = %g without test boards, want 0", statsB.BestTestLoss)
+			statsA.TotalLoss[0], statsA.TotalLoss[1])
 	}
 
-	paramsA := modelA.Params()
-	paramsB := modelB.Params()
-	for i := range paramsA {
-		if paramsA[i].Data != paramsB[i].Data {
-			t.Errorf("param %d: run A=%g, run B (restored)=%g", i, paramsA[i].Data, paramsB[i].Data)
-		}
+	// Run B: the same epochs run directly, from the same initial weights and with the rng consumed
+	// identically. The returned model must hold the weights after the last epoch, not those of the
+	// epoch with the lowest loss.
+	modelB := NewScoreModel(rand.New(rand.NewSource(seed)), []int{32}, nn.ReLU, nn.Tanh)
+	inputs := BoardsToScoreModelInputs(train)
+	outputs := BoardsToScoreModelOutputs(train)
+	rng := rand.New(rand.NewSource(0))
+	for range params.MaxEpochs {
+		trainEpoch(modelB, params, train, inputs, outputs, rng)
+	}
+
+	if !sameParams(modelA, modelB) {
+		t.Error("returned model differs from the model after the last epoch")
 	}
 }
 
@@ -239,29 +141,9 @@ func TestTrainScoreModel_NoTrainBoards(t *testing.T) {
 	params := DefaultTrainParams()
 	model := NewScoreModel(rand.New(rand.NewSource(seed)), []int{8}, nn.ReLU, nn.Tanh)
 
-	_, err := TrainScoreModel(model, params, &TrainData{}, rand.New(rand.NewSource(0)))
+	_, err := TrainScoreModel(model, params, nil, nil, rand.New(rand.NewSource(0)))
 	if err == nil {
-		t.Fatal("expected an error for empty TrainBoards, got nil")
-	}
-}
-
-func TestBestTracker(t *testing.T) {
-	losses := []float64{0.5, 0.4, 0.4, 0.6, 0.3}
-	wantImproved := []bool{true, true, false, false, true}
-	wantBest := []float64{0.5, 0.4, 0.4, 0.4, 0.3}
-	wantSinceBest := []int64{0, 0, 1, 2, 0}
-
-	tracker := newBestTracker()
-	for i, loss := range losses {
-		if got := tracker.update(loss); got != wantImproved[i] {
-			t.Errorf("step %d: update(%g) = %v, want %v", i, loss, got, wantImproved[i])
-		}
-		if tracker.best != wantBest[i] {
-			t.Errorf("step %d: best = %g, want %g", i, tracker.best, wantBest[i])
-		}
-		if tracker.sinceBest != wantSinceBest[i] {
-			t.Errorf("step %d: sinceBest = %d, want %d", i, tracker.sinceBest, wantSinceBest[i])
-		}
+		t.Fatal("expected an error for empty training boards, got nil")
 	}
 }
 
@@ -304,47 +186,348 @@ func TestTrainEpoch(t *testing.T) {
 	}
 }
 
-func TestTrainStatsAppendTestLoss(t *testing.T) {
-	var stats TrainStats
-	for _, loss := range []float64{0.5, 0.3, 0.4} {
-		stats.appendTestLoss(loss)
-	}
-
-	wantLoss := []float64{0.5, 0.3, 0.4}
-	wantDelta := []float64{math.MaxFloat64, 0.2, -0.1}
-	if len(stats.TestLoss) != len(wantLoss) || len(stats.TestLossDelta) != len(wantDelta) {
-		t.Fatalf("got %d losses and %d deltas, want %d each",
-			len(stats.TestLoss), len(stats.TestLossDelta), len(wantLoss))
-	}
-	for i := range wantLoss {
-		if stats.TestLoss[i] != wantLoss[i] {
-			t.Errorf("TestLoss[%d] = %g, want %g", i, stats.TestLoss[i], wantLoss[i])
-		}
-		if math.Abs(stats.TestLossDelta[i]-wantDelta[i]) > 1e-9 {
-			t.Errorf("TestLossDelta[%d] = %g, want %g", i, stats.TestLossDelta[i], wantDelta[i])
-		}
+func TestLogEpoch(t *testing.T) {
+	var buf bytes.Buffer
+	logEpoch(&buf, 3, 0.25)
+	want := "e: 3, loss(total): 0.25\n"
+	if got := buf.String(); got != want {
+		t.Errorf("logEpoch() = %q, want %q", got, want)
 	}
 }
 
-func TestLogEpoch(t *testing.T) {
-	trainBest := bestTracker{best: 0.25, sinceBest: 2}
-	testBest := bestTracker{best: 0.5, sinceBest: 1}
+// evaluateLoss returns the mean LossFunc loss over boards, using a forward pass only (no
+// backward, no parameter updates).
+func evaluateLoss(model *nn.MLP, boards []tictactoe.AnnotatedBoard, lossFunc LossFunc) float64 {
+	inputs := BoardsToScoreModelInputs(boards)
+	outputs := BoardsToScoreModelOutputs(boards)
+	total := 0.0
+	for k, ab := range boards {
+		scores := model.Call(inputs[k], true)
+		validMoves := tictactoe.AvailableMoves(ab.Board)
+		total += lossFunc.Call(scores, outputs[k], validMoves).Data
+	}
+	return total / float64(len(boards))
+}
+
+// annotatedSamples returns the first n reachable 3x3 boards, annotated with perfect minimax scores.
+func annotatedSamples(n int) []tictactoe.AnnotatedBoard {
+	cfg := tictactoe.MinimaxConfig{MaxDepth: 0, NodeBudget: 0, Gamma: 0.9}
+	boards := tictactoe.DeduplicateBoards(tictactoe.FilterBoards(tictactoe.Enumerate3x3Boards()))
+	return tictactoe.AnnotateCanonicalBoards(boards[:n], tictactoe.X, cfg)
+}
+
+// sameParams reports whether a and b have identical parameter values.
+func sameParams(a, b *nn.MLP) bool {
+	pa, pb := a.Params(), b.Params()
+	if len(pa) != len(pb) {
+		return false
+	}
+	for i := range pa {
+		if pa[i].Data != pb[i].Data {
+			return false
+		}
+	}
+	return true
+}
+
+func TestMinimaxOpponent(t *testing.T) {
+	model := NewScoreModel(rand.New(rand.NewSource(99)), []int{8}, nn.ReLU, nn.Tanh)
+	opponent := MinimaxOpponent(0)
+	if got := opponent(nil).Identity(); got != tictactoe.IdentityAIMinimax {
+		t.Errorf("Identity() = %q, want %q", got, tictactoe.IdentityAIMinimax)
+	}
+
+	// Every opponent starts from the same seed, so repeated matchups give the same result.
+	first := EvaluateMatchUp(model, opponent(nil), 20)
+	second := EvaluateMatchUp(model, opponent(nil), 20)
+	if first != second {
+		t.Errorf("repeated matchup: %+v, want %+v", second, first)
+	}
+}
+
+func TestSelfPlayOpponent(t *testing.T) {
+	model := NewScoreModel(rand.New(rand.NewSource(99)), []int{8}, nn.ReLU, nn.Tanh)
+	opponent := SelfPlayOpponent(0)
+
+	// The opponent plays the best model, picking randomly among its best moves.
+	p, ok := opponent(model).(*ScoreModelPlayer)
+	if !ok || p.model != model || p.rng == nil || p.topK != matchUpTopK ||
+		p.margin != matchUpMargin {
+		t.Fatal("opponent is not a sampled player for the best model")
+	}
+
+	// Every opponent starts from the same seed, so repeated matchups give the same result.
+	first := EvaluateMatchUp(model, opponent(model), 20)
+	second := EvaluateMatchUp(model, opponent(model), 20)
+	if first != second {
+		t.Errorf("repeated matchup: %+v, want %+v", second, first)
+	}
+}
+
+func TestMatchUpGate(t *testing.T) {
+	strong, err := nn.NewMLPFromFile("../models/scoremodel_3x3_hinge_18-32-32-9.json")
+	if err != nil {
+		t.Fatalf("model not available: %v", err)
+	}
+	// With all parameters zero, every cell scores the same, so in matchups the model picks randomly
+	// among the first three free cells.
+	weak := strong.Clone()
+	for _, p := range weak.Params() {
+		p.Data = 0
+	}
+	gate := &matchUpGate{opponent: MinimaxOpponent(0), games: 10, best: strong.Clone()}
+
+	// The first matchup keeps the model, even though it scores lower than the best model.
+	model := weak.Clone()
+	r := gate.playMatch(model, 1.0)
+	if r.matchUp.Score >= r.bestScore {
+		t.Fatalf("first matchup: weak model scores %g vs best %g, want lower",
+			r.matchUp.Score, r.bestScore)
+	}
+	if !r.first || !r.kept || r.sinceImproved != 0 || gate.bestLoss != 1.0 ||
+		!sameParams(gate.best, weak) {
+		t.Errorf("first matchup: first=%v kept=%v sinceImproved=%d bestLoss=%g replaced=%v, "+
+			"want true, true, 0, 1, true",
+			r.first, r.kept, r.sinceImproved, gate.bestLoss, sameParams(gate.best, weak))
+	}
+
+	// After that, a model that scores higher replaces the best model, even with a higher loss.
+	restoreParams(model, snapshotParams(strong))
+	r = gate.playMatch(model, 2.0)
+	if r.first || !r.kept || r.matchUp.Score <= r.bestScore {
+		t.Fatalf("stronger model: first=%v kept=%v with score %g vs best %g, "+
+			"want kept with a higher score", r.first, r.kept, r.matchUp.Score, r.bestScore)
+	}
+	if r.sinceImproved != 0 || gate.bestLoss != 2.0 || !sameParams(gate.best, strong) {
+		t.Errorf("stronger model: sinceImproved=%d bestLoss=%g replaced=%v, want 0, 2, true",
+			r.sinceImproved, gate.bestLoss, sameParams(gate.best, strong))
+	}
+
+	// The same score without a lower loss is no improvement.
+	r = gate.playMatch(model, 2.0)
+	if r.kept || r.matchUp.Score != r.bestScore || r.sinceImproved != 1 {
+		t.Errorf("tie, same loss: kept=%v score %g vs best %g sinceImproved=%d, "+
+			"want reverted on equal scores, 1", r.kept, r.matchUp.Score, r.bestScore, r.sinceImproved)
+	}
+
+	// The same score with a lower loss replaces the best model, but is no improvement of the score.
+	r = gate.playMatch(model, 1.5)
+	if !r.kept || r.matchUp.Score != r.bestScore || r.bestLoss != 2.0 || r.sinceImproved != 2 ||
+		gate.bestLoss != 1.5 {
+		t.Errorf("tie, lower loss: kept=%v score %g vs best %g, loss vs best %g, sinceImproved=%d, "+
+			"new bestLoss=%g, want kept on equal scores, 2, 2, 1.5",
+			r.kept, r.matchUp.Score, r.bestScore, r.bestLoss, r.sinceImproved, gate.bestLoss)
+	}
+
+	// A model that scores lower is reverted to the best one, even with a lower loss.
+	restoreParams(model, snapshotParams(weak))
+	r = gate.playMatch(model, 0.1)
+	if r.kept || r.sinceImproved != 3 || !sameParams(model, strong) {
+		t.Errorf("weaker model: kept=%v sinceImproved=%d reverted=%v, want false, 3, true",
+			r.kept, r.sinceImproved, sameParams(model, strong))
+	}
+
+	// A higher score resets the count again.
+	restoreParams(gate.best, snapshotParams(weak))
+	r = gate.playMatch(model, 1.0)
+	if !r.kept || r.matchUp.Score <= r.bestScore || r.sinceImproved != 0 {
+		t.Errorf("higher score: kept=%v score %g vs best %g sinceImproved=%d, "+
+			"want kept with a higher score, 0", r.kept, r.matchUp.Score, r.bestScore, r.sinceImproved)
+	}
+}
+
+func TestLogMatchUp(t *testing.T) {
+	matchUp := MatchUpStats{NumGames: 100, Wins: 0, Draws: 80, Losses: 20, Score: 0.4}
 
 	tests := []struct {
-		name          string
-		hasTestBoards bool
-		want          string
+		name string
+		r    matchUpResult
+		want string // without the common prefix and the trailing newline
 	}{
-		{"with test boards", true,
-			"e: 3, loss(total): 0.25, noimprove: 2, loss(test): 0.75, noimprove(test): 1\n"},
-		{"without test boards", false, "e: 3, loss(total): 0.25, noimprove: 2\n"},
+		{"kept as first matchup",
+			matchUpResult{bestScore: 0.45, first: true, kept: true},
+			"score: 0.4 < best: 0.45, kept as first matchup, noimprove: 0"},
+		{"first matchup tie shows no loss",
+			matchUpResult{bestScore: 0.4, loss: 0.7, first: true, kept: true},
+			"score: 0.4 = best: 0.4, kept as first matchup, noimprove: 0"},
+		{"kept as new best",
+			matchUpResult{bestScore: 0.35, kept: true},
+			"score: 0.4 > best: 0.35, kept as new best, noimprove: 0"},
+		{"reverted",
+			matchUpResult{bestScore: 0.45, sinceImproved: 2},
+			"score: 0.4 < best: 0.45, reverted, noimprove: 2"},
+		{"tie kept by lower loss",
+			matchUpResult{bestScore: 0.4, loss: 0.7, bestLoss: 0.8, kept: true, sinceImproved: 1},
+			"score: 0.4 = best: 0.4, loss: 0.7 < best: 0.8, kept as new best, noimprove: 1"},
+		{"tie reverted by loss",
+			matchUpResult{bestScore: 0.4, loss: 0.8, bestLoss: 0.8, sinceImproved: 1},
+			"score: 0.4 = best: 0.4, loss: 0.8 >= best: 0.8, reverted, noimprove: 1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			logEpoch(&buf, 3, 0.25, trainBest, tt.hasTestBoards, 0.75, testBest)
-			if got := buf.String(); got != tt.want {
-				t.Errorf("logEpoch() = %q, want %q", got, tt.want)
+			tt.r.matchUp = matchUp
+			logMatchUp(&buf, 3, tt.r)
+			want := "e: 3, matchup: 0-80-20, " + tt.want + "\n"
+			if got := buf.String(); got != want {
+				t.Errorf("logMatchUp() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestTrainScoreModel_MatchUpPatienceStops(t *testing.T) {
+	params := DefaultTrainParams()
+	params.MaxEpochs = 500
+	params.MatchUpInterval = 2
+	params.MatchUpPatience = 2
+	params.MatchUpGames = 10
+	params.LearningRate = 0.0 // zero LR: the model never changes, so it only ties with the best model
+	// A single board makes every epoch's loss exactly equal, so no tie is broken by the loss.
+	boards := annotatedSamples(1)
+	model := NewScoreModel(rand.New(rand.NewSource(99)), []int{8}, nn.ReLU, nn.Tanh)
+
+	stats, err := TrainScoreModel(model, params, boards, MinimaxOpponent(0),
+		rand.New(rand.NewSource(0)))
+	if err != nil {
+		t.Fatalf("TrainScoreModel failed: %v", err)
+	}
+
+	// The first matchup after epoch 2 always keeps the model; the ties after epochs 4 and 6 do not.
+	if stats.Epochs != 6 {
+		t.Errorf("Epochs = %d, want 6", stats.Epochs)
+	}
+	wantKept := []bool{true, false, false}
+	if len(stats.MatchUpScore) != 3 || len(stats.MatchUpBestScore) != 3 ||
+		len(stats.MatchUpKept) != 3 {
+		t.Fatalf("got %d matchup scores, %d best scores and %d kept flags, want 3 each",
+			len(stats.MatchUpScore), len(stats.MatchUpBestScore), len(stats.MatchUpKept))
+	}
+	for i := range stats.MatchUpScore {
+		if stats.MatchUpScore[i] != stats.MatchUpBestScore[i] {
+			t.Errorf("matchup %d: score %g, want tie with best %g",
+				i, stats.MatchUpScore[i], stats.MatchUpBestScore[i])
+		}
+		if stats.MatchUpKept[i] != wantKept[i] {
+			t.Errorf("matchup %d: kept = %v, want %v", i, stats.MatchUpKept[i], wantKept[i])
+		}
+	}
+}
+
+func TestTrainScoreModel_MatchUpRestoresBest(t *testing.T) {
+	params := DefaultTrainParams()
+	params.MaxEpochs = 5
+	params.MatchUpInterval = 2
+	params.MatchUpGames = 20
+	params.LearningRate = 0.5
+	boards := annotatedSamples(200)
+	model := NewScoreModel(rand.New(rand.NewSource(99)), []int{8}, nn.ReLU, nn.Tanh)
+
+	stats, err := TrainScoreModel(model, params, boards, MinimaxOpponent(0),
+		rand.New(rand.NewSource(0)))
+	if err != nil {
+		t.Fatalf("TrainScoreModel failed: %v", err)
+	}
+
+	// Matchups after epochs 2 and 4, and after the last epoch 5.
+	if len(stats.MatchUpScore) != 3 {
+		t.Fatalf("len(MatchUpScore) = %d, want 3", len(stats.MatchUpScore))
+	}
+
+	// After the last matchup, the best model is the trained one if it was kept, otherwise the
+	// previous best one.
+	want := stats.MatchUpBestScore[2]
+	if stats.MatchUpKept[2] {
+		want = stats.MatchUpScore[2]
+	}
+	// Replays the matchup with the players' seed, which TrainScoreModel draws first from its rng.
+	seed := rand.New(rand.NewSource(0)).Int63()
+	got := playMatchUp(newMatchUpPlayer(model, seed), MinimaxOpponent(0)(nil), params.MatchUpGames)
+	if got.Score != want {
+		t.Errorf("returned model scores %g, want %g", got.Score, want)
+	}
+}
+
+func TestTrainScoreModel_MatchUpEpochs(t *testing.T) {
+	tests := []struct {
+		name         string
+		maxEpochs    int64
+		interval     int64
+		wantMatchUps int
+	}{
+		{"every epoch", 3, 1, 3},
+		{"max epochs multiple of interval", 4, 2, 2},
+		{"extra matchup after last epoch", 5, 2, 3},
+		{"interval equals max epochs", 3, 3, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := DefaultTrainParams()
+			params.MaxEpochs = tt.maxEpochs
+			params.MatchUpInterval = tt.interval
+			params.MatchUpGames = 2
+			model := NewScoreModel(rand.New(rand.NewSource(99)), []int{8}, nn.ReLU, nn.Tanh)
+
+			stats, err := TrainScoreModel(model, params, annotatedSamples(20), MinimaxOpponent(0),
+				rand.New(rand.NewSource(0)))
+			if err != nil {
+				t.Fatalf("TrainScoreModel failed: %v", err)
+			}
+			if len(stats.MatchUpScore) != tt.wantMatchUps {
+				t.Errorf("got %d matchups, want %d", len(stats.MatchUpScore), tt.wantMatchUps)
+			}
+		})
+	}
+}
+
+func TestTrainScoreModel_SelfPlay(t *testing.T) {
+	params := DefaultTrainParams()
+	params.MaxEpochs = 3
+	params.MatchUpInterval = 1
+	params.MatchUpGames = 10
+	boards := annotatedSamples(200)
+	model := NewScoreModel(rand.New(rand.NewSource(99)), []int{8}, nn.ReLU, nn.Tanh)
+
+	stats, err := TrainScoreModel(model, params, boards, SelfPlayOpponent(0),
+		rand.New(rand.NewSource(0)))
+	if err != nil {
+		t.Fatalf("TrainScoreModel failed: %v", err)
+	}
+
+	// The keep-or-revert logic is covered by the minimax tests, this checks self-play end to end.
+	if len(stats.MatchUpScore) != 3 || len(stats.MatchUpBestScore) != 3 ||
+		len(stats.MatchUpKept) != 3 {
+		t.Fatalf("got %d matchup scores, %d best scores and %d kept flags, want 3 each",
+			len(stats.MatchUpScore), len(stats.MatchUpBestScore), len(stats.MatchUpKept))
+	}
+	if !stats.MatchUpKept[0] {
+		t.Error("first matchup: reverted, want kept")
+	}
+}
+
+func TestTrainScoreModel_InvalidMatchUp(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval int64
+		games    int
+		opponent MatchUpOpponent
+	}{
+		{"no games", 1, 0, MinimaxOpponent(0)},
+		{"no opponent", 1, 10, nil},
+		{"interval exceeds max epochs", 4, 10, MinimaxOpponent(0)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := DefaultTrainParams()
+			params.MaxEpochs = 3
+			params.MatchUpInterval = tt.interval
+			params.MatchUpGames = tt.games
+			model := NewScoreModel(rand.New(rand.NewSource(99)), []int{8}, nn.ReLU, nn.Tanh)
+
+			_, err := TrainScoreModel(model, params, annotatedSamples(10), tt.opponent,
+				rand.New(rand.NewSource(0)))
+			if err == nil {
+				t.Fatal("expected an error, got nil")
 			}
 		})
 	}

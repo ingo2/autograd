@@ -27,7 +27,6 @@ func TestLoadModelInfo(t *testing.T) {
 		TrainStats: TrainStats{
 			TotalLoss: []float64{0.5, 0.4},
 			Epochs:    2,
-			BestLoss:  0.4,
 		},
 	}
 
